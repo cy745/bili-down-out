@@ -1,21 +1,32 @@
 package cn.a10miaomiao.bilidown.ui.components
 
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.sp
 import cn.a10miaomiao.bilidown.common.BiliDownOutFile
+import cn.a10miaomiao.bilidown.common.BiliDownUtils
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileNameInputDialog(
     showInputDialog: Boolean,
@@ -24,11 +35,10 @@ fun FileNameInputDialog(
     onDismiss: () -> Unit,
     onConfirm: (outFile: BiliDownOutFile) -> Unit,
 ) {
-    var errorText by remember() {
-        mutableStateOf("")
-    }
+    var errorText by remember { mutableStateOf("") }
     var value by remember(fileName) {
-        mutableStateOf(TextFieldValue(text = fileName, selection = TextRange(fileName.length)))
+        val name = BiliDownUtils.filenamify(fileName)
+        mutableStateOf(TextFieldValue(text = name, selection = TextRange(name.length)))
     }
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(showInputDialog) {
@@ -70,13 +80,26 @@ fun FileNameInputDialog(
             text = {
                 TextField(
                     label = {
-                        Text(text = "文件名")
+                        Text(
+                            text = "文件名",
+                            lineHeight = 32.sp
+                        )
                     },
                     trailingIcon = {
-                        Text(text = ".mp4")
+                        Text(
+                            text = ".mp4",
+                            fontSize = 14.sp,
+                            lineHeight = 32.sp
+                        )
                     },
                     supportingText = {
-                        Text(text = errorText)
+                        Text(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .basicMarquee(iterations = Int.MAX_VALUE),
+                            text = errorText.takeIf { it.isNotBlank() } ?: fileName,
+                            maxLines = 1
+                        )
                     },
                     isError = errorText.isNotBlank(),
                     value = value,
@@ -87,7 +110,7 @@ fun FileNameInputDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .focusRequester(focusRequester),
-                    singleLine = true,
+                    singleLine = false,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(
                         onDone = { handleConfirm() }
@@ -97,12 +120,13 @@ fun FileNameInputDialog(
             confirmButton = {
                 TextButton(
                     onClick = ::handleConfirm,
+                    enabled = errorText.isEmpty() && value.text.isNotBlank()
                 ) {
                     Text(confirmText)
                 }
             },
             dismissButton = {
-                Row() {
+                Row {
                     if (" " in value.text) {
                         TextButton(
                             onClick = ::handleClearSpace,
@@ -119,4 +143,15 @@ fun FileNameInputDialog(
             }
         )
     }
+}
+
+@Preview
+@Composable
+private fun DialogPreview(modifier: Modifier = Modifier) {
+    FileNameInputDialog(showInputDialog = true,
+        fileName = "test",
+        confirmText = "",
+        onDismiss = {},
+        onConfirm = {}
+    )
 }
