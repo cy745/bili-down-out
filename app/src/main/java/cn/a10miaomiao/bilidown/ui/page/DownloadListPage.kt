@@ -1,36 +1,44 @@
 package cn.a10miaomiao.bilidown.ui.page
 
-import android.Manifest
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import cn.a10miaomiao.bilidown.R
 import cn.a10miaomiao.bilidown.common.BiliDownFile
-import cn.a10miaomiao.bilidown.common.BiliDownUtils
 import cn.a10miaomiao.bilidown.common.MiaoLog
-import cn.a10miaomiao.bilidown.common.datastore.DataStoreKeys
-import cn.a10miaomiao.bilidown.common.datastore.rememberDataStorePreferencesFlow
 import cn.a10miaomiao.bilidown.common.lifecycle.LaunchedLifecycleObserver
 import cn.a10miaomiao.bilidown.common.localStoragePermission
 import cn.a10miaomiao.bilidown.common.molecule.collectAction
@@ -40,14 +48,16 @@ import cn.a10miaomiao.bilidown.entity.DownloadItemInfo
 import cn.a10miaomiao.bilidown.entity.DownloadType
 import cn.a10miaomiao.bilidown.shizuku.localShizukuPermission
 import cn.a10miaomiao.bilidown.ui.BiliDownScreen
+import cn.a10miaomiao.bilidown.ui.components.BatchExportConfirmDialog
 import cn.a10miaomiao.bilidown.ui.components.DownloadListItem
 import cn.a10miaomiao.bilidown.ui.components.PermissionDialog
+import cn.a10miaomiao.bilidown.ui.components.SelectBar
 import cn.a10miaomiao.bilidown.ui.components.SwipeToRefresh
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import moe.tlaster.precompose.navigation.BackHandler
 import rikka.shizuku.ShizukuProvider
 
 
@@ -58,6 +68,10 @@ data class DownloadListPageState(
     val loading: Boolean,
     val refreshing: Boolean,
     val failMessage: String,
+
+    val isSelecting: Boolean,
+    val selectItems: List<DownloadInfo>,
+    val confirmingBatchExport: Boolean
 )
 
 sealed class DownloadListPageAction {
@@ -70,6 +84,13 @@ sealed class DownloadListPageAction {
         val packageName: String,
         val enabledShizuku: Boolean,
     ) : DownloadListPageAction()
+
+    class SelectItem(val item: DownloadInfo) : DownloadListPageAction()
+    data object SelectAllItem : DownloadListPageAction()
+    data object ClearSelectItem : DownloadListPageAction()
+    data object ExitSelecting : DownloadListPageAction()
+    data object ShowBatchConfirm : DownloadListPageAction()
+    data object DismissBatchConfirm : DownloadListPageAction()
 }
 
 @Composable
@@ -93,6 +114,15 @@ fun DownloadListPagePresenter(
         mutableStateOf(true)
     }
     var refreshing by remember {
+        mutableStateOf(false)
+    }
+    var isSelecting by remember {
+        mutableStateOf(false)
+    }
+    var selectItems by remember {
+        mutableStateOf(emptyList<DownloadInfo>())
+    }
+    var confirmingBatchExport by remember {
         mutableStateOf(false)
     }
 
@@ -214,6 +244,44 @@ fun DownloadListPagePresenter(
                     getList(it.packageName, it.enabledShizuku)
                 }
             }
+
+            is DownloadListPageAction.SelectItem -> {
+                if (selectItems.contains(it.item)) {
+                    selectItems -= it.item
+                } else {
+                    if (!isSelecting) {
+                        isSelecting = true
+                    }
+                    selectItems += it.item
+                }
+            }
+
+            is DownloadListPageAction.ClearSelectItem -> {
+                selectItems = emptyList()
+            }
+
+            is DownloadListPageAction.SelectAllItem -> {
+                if (!isSelecting) {
+                    isSelecting = true
+                }
+                selectItems = list
+            }
+
+            is DownloadListPageAction.ExitSelecting -> {
+                isSelecting = false
+                selectItems = emptyList()
+            }
+
+            is DownloadListPageAction.ShowBatchConfirm -> {
+                if (selectItems.isEmpty()) {
+                    return@collectAction
+                }
+                confirmingBatchExport = true
+            }
+
+            is DownloadListPageAction.DismissBatchConfirm -> {
+                confirmingBatchExport = false
+            }
         }
     }
     return DownloadListPageState(
@@ -223,6 +291,9 @@ fun DownloadListPagePresenter(
         loading,
         refreshing,
         failMessage,
+        isSelecting,
+        selectItems,
+        confirmingBatchExport
     )
 }
 
@@ -230,7 +301,9 @@ fun DownloadListPagePresenter(
 fun DownloadListPage(
     navController: NavHostController,
     packageName: String,
+    onSelectBarVisible: ((@Composable () -> Unit)?) -> Unit = {}
 ) {
+    val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
     var showPermissionDialog by remember { mutableStateOf(false) }
     val storagePermission = localStoragePermission()
@@ -241,6 +314,40 @@ fun DownloadListPage(
     val (state, channel) = rememberPresenter(listOf(packageName, permissionState)) {
         DownloadListPagePresenter(context, it)
     }
+
+    val selectItems = rememberUpdatedState(state.selectItems)
+
+    LaunchedEffect(state.isSelecting) {
+        if (state.isSelecting) {
+            onSelectBarVisible {
+                SelectBar(
+                    selectedCount = selectItems.value.size,
+                    onSelectAll = { channel.trySend(DownloadListPageAction.SelectAllItem) },
+                    onClear = { channel.trySend(DownloadListPageAction.ClearSelectItem) },
+                    onCancel = { channel.trySend(DownloadListPageAction.ExitSelecting) },
+                    onDone = { channel.trySend(DownloadListPageAction.ShowBatchConfirm) }
+                )
+            }
+        } else {
+            onSelectBarVisible(null)
+        }
+    }
+
+    BackHandler(enabled = state.isSelecting) {
+        channel.trySend(DownloadListPageAction.ExitSelecting)
+    }
+
+    BatchExportConfirmDialog(
+        visible = state.confirmingBatchExport,
+        count = selectItems.value.size,
+        onConfirm = {
+            channel.trySend(DownloadListPageAction.DismissBatchConfirm)
+            channel.trySend(DownloadListPageAction.ExitSelecting)
+        },
+        onDismiss = {
+            channel.trySend(DownloadListPageAction.DismissBatchConfirm)
+        }
+    )
 
     LaunchedEffect(
         packageName,
@@ -284,7 +391,8 @@ fun DownloadListPage(
     fun openShizuku() {
         try {
             val packageManager = context.packageManager
-            val intent = packageManager.getLaunchIntentForPackage(ShizukuProvider.MANAGER_APPLICATION_ID)
+            val intent =
+                packageManager.getLaunchIntentForPackage(ShizukuProvider.MANAGER_APPLICATION_ID)
             if (intent == null) {
                 Toast.makeText(context, "未找到Shizuku", Toast.LENGTH_LONG)
                     .show()
@@ -314,7 +422,7 @@ fun DownloadListPage(
             )
         },
     ) {
-       if (state.list.isEmpty()) {
+        if (state.list.isEmpty()) {
             Column(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.Center,
@@ -363,7 +471,8 @@ fun DownloadListPage(
                     Spacer(modifier = Modifier.height(20.dp))
                     Button(
                         onClick = {
-                            val biliDownFile = BiliDownFile(context, packageName, shizukuPermissionState.isEnabled)
+                            val biliDownFile =
+                                BiliDownFile(context, packageName, shizukuPermissionState.isEnabled)
                             biliDownFile.startFor(2)
                         }
                     ) {
@@ -415,16 +524,24 @@ fun DownloadListPage(
                 items(state.list, { it.dir_path }) {
                     DownloadListItem(
                         item = it,
+                        isSelected = state.selectItems.contains(it),
                         onClick = {
-                            val dirPath = Uri.encode(it.dir_path)
-                            navController.navigate(
-                                BiliDownScreen.Detail.route + "?packageName=${packageName}&dirPath=${dirPath}"
-                            )
+                            if (!state.isSelecting) {
+                                val dirPath = Uri.encode(it.dir_path)
+                                navController.navigate(
+                                    BiliDownScreen.Detail.route + "?packageName=${packageName}&dirPath=${dirPath}"
+                                )
+                            } else {
+                                channel.trySend(DownloadListPageAction.SelectItem(it))
+                            }
+                        },
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            channel.trySend(DownloadListPageAction.SelectItem(it))
                         }
                     )
                 }
             }
         }
     }
-
 }
